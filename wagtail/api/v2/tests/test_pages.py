@@ -1,5 +1,6 @@
 import collections
 import json
+import unittest
 from io import StringIO
 from unittest import mock
 
@@ -1205,6 +1206,74 @@ class TestPageListingSearch(WagtailTestUtils, TransactionTestCase):
         page_id_list = self.get_page_id_list(content)
 
         self.assertEqual(page_id_list, [19, 5, 16, 18])
+
+    @unittest.skipUnless(
+        hasattr(__import__('wagtail.search.backends', fromlist=['elasticsearch7']), 'elasticsearch7'),
+        "Elasticsearch backend not available"
+    )
+    @override_settings(
+        WAGTAILSEARCH_BACKENDS={
+            'default': {
+                'BACKEND': 'wagtail.search.backends.elasticsearch7',
+                'URLS': ['http://localhost:9201'],
+                'INDEX': 'wagtail_test',
+                'TIMEOUT': 10,
+            }
+        }
+    )
+    def test_search_with_descending_order_elasticsearch_backend_specific(self):
+        # Check which search backend is actually being used
+        from wagtail.search.backends import get_search_backend
+        backend = get_search_backend()
+        print(f"\nActual search backend: {type(backend).__name__}")
+        print(f"Backend class: {backend.__class__.__module__}.{backend.__class__.__name__}")
+        
+        # Rebuild the search index for the Elasticsearch backend
+        try:
+            management.call_command(
+                "update_index",
+                backend_name="default",
+                stdout=StringIO(),
+                chunk_size=50,
+            )
+            print("Successfully updated search index")
+        except Exception as e:
+            print(f"Failed to update index: {e}")
+            self.skipTest(f"Elasticsearch not available: {e}")
+
+        response_asc = self.get_response(search="blog", order="title") 
+        response_desc = self.get_response(search="blog", order="-title")
+        
+        print(f"Ascending response status: {response_asc.status_code}")
+        print(f"Descending response status: {response_desc.status_code}")
+        
+        if response_asc.status_code != 200 or response_desc.status_code != 200:
+            if response_asc.status_code != 200:
+                print(f"Ascending response error: {response_asc.content}")
+            if response_desc.status_code != 200:
+                print(f"Descending response error: {response_desc.content}")
+            self.skipTest("Elasticsearch backend not working properly")
+
+        content_asc = json.loads(response_asc.content.decode("UTF-8"))
+        content_desc = json.loads(response_desc.content.decode("UTF-8"))
+        
+        page_id_list_asc = self.get_page_id_list(content_asc)
+        page_id_list_desc = self.get_page_id_list(content_desc)
+
+        print(f"Ascending order results: {page_id_list_asc}")
+        print(f"Descending order results: {page_id_list_desc}")
+        print(f"Expected descending (reversed): {list(reversed(page_id_list_asc))}")
+
+        # The bug: With Elasticsearch, descending order doesn't work
+        if page_id_list_asc == page_id_list_desc:
+            self.fail(f"BUG CONFIRMED: Both ascending and descending return same order: {page_id_list_asc}")
+        
+        # They should be reverse of each other
+        expected_desc = list(reversed(page_id_list_asc))
+        if page_id_list_desc != expected_desc:
+            self.fail(f"Ordering mismatch - Expected descending: {expected_desc}, Got: {page_id_list_desc}")
+
+        print("✅ Descending order working correctly!")
 
     def test_search_with_order_on_non_filterable_field(self):
         response = self.get_response(
